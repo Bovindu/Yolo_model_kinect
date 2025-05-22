@@ -64,7 +64,7 @@ class Program
             _depthWidth = depthFrame.Width;
             _depthHeight = depthFrame.Height;
 
-            // Convert to bitmap
+            // Convert color data to bitmap and send to YOLO (existing code)
             Bitmap bmp = new Bitmap(colorFrame.Width, colorFrame.Height, PixelFormat.Format32bppRgb);
             BitmapData bmpData = bmp.LockBits(
                 new Rectangle(0, 0, bmp.Width, bmp.Height),
@@ -74,7 +74,6 @@ class Program
             Marshal.Copy(_colorData, 0, bmpData.Scan0, _colorData.Length);
             bmp.UnlockBits(bmpData);
 
-            // Convert to OpenCV Mat
             Mat cvMat = BitmapConverter.ToMat(bmp);
 
             // Send to YOLO server (existing code)
@@ -89,13 +88,15 @@ class Program
             string jsonResponse = _zmqSocket.ReceiveFrameString();
             var detections = JsonConvert.DeserializeObject<List<Detection>>(jsonResponse);
 
+            // Create depth visualization
+            Mat depthColorMat = RenderDepthFrame(_depthData, _depthWidth, _depthHeight);
+
             foreach (var d in detections)
             {
-                // Existing drawing code
-                var centerX = (d.BBox[0] + d.BBox[2]) / 2;
-                var centerY = (d.BBox[1] + d.BBox[3]) / 2;
+                var centerX = (d.BBox[0] + d.BBox[2]) / 2 - 17;
+                var centerY = (d.BBox[1] + d.BBox[3]) / 2 - 13;
 
-                // Get depth at color coordinates
+                // Map color coordinates to depth
                 int depthX = (int)(centerX * _depthWidth / colorFrame.Width);
                 int depthY = (int)(centerY * _depthHeight / colorFrame.Height);
                 int depthIndex = depthY * _depthWidth + depthX;
@@ -104,13 +105,19 @@ class Program
                 {
                     short depthValue = _depthData[depthIndex];
                     int depthInMm = depthValue >> DepthImageFrame.PlayerIndexBitmaskWidth;
-                                       
-                    Cv2.Circle(cvMat, new OpenCvSharp.Point((d.BBox[0] + d.BBox[2]) / 2, (d.BBox[1] + d.BBox[3]) / 2), 5, Scalar.Red, -1);
+
+                    // Draw on depth frame
+                    Cv2.Circle(
+                        depthColorMat, 
+                        new OpenCvSharp.Point(depthX , depthY), 
+                        5, Scalar.Red, 
+                        -1
+                    );
 
                     Cv2.PutText(
-                        cvMat,
+                        depthColorMat,
                         $"{depthInMm}mm",
-                        new OpenCvSharp.Point(d.BBox[0], d.BBox[1] - 30),
+                        new OpenCvSharp.Point(depthX, depthY - 30),
                         HersheyFonts.HersheySimplex,
                         0.6,
                         Scalar.White,
@@ -119,9 +126,37 @@ class Program
                 }
             }
 
-            Cv2.ImShow("Kinect + YOLO", cvMat);
+            // Show frames
+            Cv2.ImShow("RGB Frame", cvMat);
+            Cv2.ImShow("Depth Frame", depthColorMat);
             Cv2.WaitKey(1);
+
+            // Dispose Mats
+            cvMat.Dispose();
+            depthColorMat.Dispose();
         }
+    }
+
+    static Mat RenderDepthFrame(short[] depthData, int width, int height)
+    {
+        // Convert depth data to millimeters and then to 8-bit grayscale
+        ushort[] depthInMm = new ushort[depthData.Length];
+        for (int i = 0; i < depthData.Length; i++)
+        {
+            depthInMm[i] = (ushort)(depthData[i] >> 3); // Extract depth in mm
+        }
+
+        Mat depthMat16U = new Mat(height, width, MatType.CV_16UC1, depthInMm);
+        Mat depthMat8U = new Mat();
+        double maxDepth = 4000; // Adjust based on your max expected depth
+        depthMat16U.ConvertTo(depthMat8U, MatType.CV_8UC1, 255.0 / maxDepth);
+        Cv2.Subtract(255, depthMat8U, depthMat8U); // Invert for better visualization
+
+        // Convert to BGR for color annotations
+        Mat depthColorMat = new Mat();
+        Cv2.CvtColor(depthMat8U, depthColorMat, ColorConversionCodes.GRAY2BGR);
+
+        return depthColorMat;
     }
 }
 
