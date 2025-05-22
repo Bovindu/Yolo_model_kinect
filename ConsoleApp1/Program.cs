@@ -16,56 +16,68 @@ class Program
 {
     static KinectSensor _sensor;
     static RequestSocket _zmqSocket;
+    static short[] _depthData;
+    static byte[] _colorData;
+    static int _depthWidth;
+    static int _depthHeight;
 
     static void Main()
     {
-        // Initialize ZeroMQ (connect to Python YOLO server)
         _zmqSocket = new RequestSocket();
         _zmqSocket.Connect("tcp://localhost:5555");
 
-        // Initialize Kinect
-        _sensor = KinectSensor.KinectSensors.FirstOrDefault(s => s.Status == KinectStatus.Connected);
+        _sensor = KinectSensor.KinectSensors.FirstOrDefault();
         if (_sensor != null)
         {
+            // Enable streams
             _sensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30);
-            _sensor.ColorFrameReady += Sensor_ColorFrameReady;
+            _sensor.DepthStream.Enable(DepthImageFormat.Resolution640x480Fps30);
+
+            // Allocate space for frames
+            _depthData = new short[_sensor.DepthStream.FramePixelDataLength];
+            _colorData = new byte[_sensor.ColorStream.FramePixelDataLength];
+
+            _sensor.AllFramesReady += AllFramesReady;
             _sensor.Start();
+
             Console.WriteLine("Kinect streaming started. Press Enter to exit.");
             Console.ReadLine();
 
-            // Cleanup
             _sensor.Stop();
             _zmqSocket.Dispose();
             Cv2.DestroyAllWindows();
         }
-        else
-        {
-            Console.WriteLine("No Kinect found!");
-        }
     }
 
-    static void Sensor_ColorFrameReady(object sender, ColorImageFrameReadyEventArgs e)
+    static void AllFramesReady(object sender, AllFramesReadyEventArgs e)
     {
-        using (var frame = e.OpenColorImageFrame())
+        using (ColorImageFrame colorFrame = e.OpenColorImageFrame())
+        using (DepthImageFrame depthFrame = e.OpenDepthImageFrame())
         {
-            if (frame == null) return;
+            if (colorFrame == null || depthFrame == null) return;
 
-            // Convert Kinect frame to Bitmap
-            byte[] pixelData = new byte[frame.PixelDataLength];
-            frame.CopyPixelDataTo(pixelData);
-            Bitmap bmp = new Bitmap(frame.Width, frame.Height, PixelFormat.Format32bppRgb);
+            // Get color data
+            colorFrame.CopyPixelDataTo(_colorData);
+
+            // Get depth data
+            depthFrame.CopyPixelDataTo(_depthData);
+            _depthWidth = depthFrame.Width;
+            _depthHeight = depthFrame.Height;
+
+            // Convert to bitmap
+            Bitmap bmp = new Bitmap(colorFrame.Width, colorFrame.Height, PixelFormat.Format32bppRgb);
             BitmapData bmpData = bmp.LockBits(
                 new Rectangle(0, 0, bmp.Width, bmp.Height),
                 ImageLockMode.WriteOnly,
                 bmp.PixelFormat
             );
-            Marshal.Copy(pixelData, 0, bmpData.Scan0, pixelData.Length);
+            Marshal.Copy(_colorData, 0, bmpData.Scan0, _colorData.Length);
             bmp.UnlockBits(bmpData);
 
             // Convert to OpenCV Mat
             Mat cvMat = BitmapConverter.ToMat(bmp);
 
-            // Send to Python YOLO server
+            // Send to YOLO server (existing code)
             byte[] jpegBytes;
             using (MemoryStream ms = new MemoryStream())
             {
@@ -74,45 +86,41 @@ class Program
             }
             _zmqSocket.SendFrame(jpegBytes);
 
-            // Get detections from Python
             string jsonResponse = _zmqSocket.ReceiveFrameString();
             var detections = JsonConvert.DeserializeObject<List<Detection>>(jsonResponse);
 
-            // Draw bounding boxes
             foreach (var d in detections)
             {
-                Cv2.Rectangle(
-                    cvMat,
-                    new OpenCvSharp.Point(d.BBox[0], d.BBox[1]),
-                    new OpenCvSharp.Point(d.BBox[2], d.BBox[3]),
-                    Scalar.Red,
-                    2
-                );
-
+                // Existing drawing code
                 var centerX = (d.BBox[0] + d.BBox[2]) / 2;
                 var centerY = (d.BBox[1] + d.BBox[3]) / 2;
 
-                Cv2.Circle(
-                    cvMat,
-                    new OpenCvSharp.Point(centerX,centerY),
-                    5,
-                    Scalar.Blue,
-                    -1
-                );
-                Cv2.PutText(
-                    cvMat,
-                    $"{d.Label} ({d.Confidence:P0})",
-                    new OpenCvSharp.Point(d.BBox[0], d.BBox[1] - 10),
-                    HersheyFonts.HersheySimplex,
-                    0.6,
-                    Scalar.Green,
-                    1
-                );
+                // Get depth at color coordinates
+                int depthX = (int)(centerX * _depthWidth / colorFrame.Width);
+                int depthY = (int)(centerY * _depthHeight / colorFrame.Height);
+                int depthIndex = depthY * _depthWidth + depthX;
+
+                if (depthIndex >= 0 && depthIndex < _depthData.Length)
+                {
+                    short depthValue = _depthData[depthIndex];
+                    int depthInMm = depthValue >> DepthImageFrame.PlayerIndexBitmaskWidth;
+                                       
+                    Cv2.Circle(cvMat, new OpenCvSharp.Point((d.BBox[0] + d.BBox[2]) / 2, (d.BBox[1] + d.BBox[3]) / 2), 5, Scalar.Red, -1);
+
+                    Cv2.PutText(
+                        cvMat,
+                        $"{depthInMm}mm",
+                        new OpenCvSharp.Point(d.BBox[0], d.BBox[1] - 30),
+                        HersheyFonts.HersheySimplex,
+                        0.6,
+                        Scalar.White,
+                        1
+                    );
+                }
             }
 
-            // Display
             Cv2.ImShow("Kinect + YOLO", cvMat);
-            Cv2.WaitKey(1); // Refresh window
+            Cv2.WaitKey(1);
         }
     }
 }
