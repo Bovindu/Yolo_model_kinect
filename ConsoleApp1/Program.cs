@@ -61,8 +61,8 @@ class Program
 
             // Get depth data
             depthFrame.CopyPixelDataTo(_depthData);
-            _depthWidth = depthFrame.Width;
-            _depthHeight = depthFrame.Height;
+            _depthWidth = depthFrame.Width;            
+            _depthHeight = depthFrame.Height;            
 
             // Convert color data to bitmap and send to YOLO (existing code)
             Bitmap bmp = new Bitmap(colorFrame.Width, colorFrame.Height, PixelFormat.Format32bppRgb);
@@ -91,14 +91,20 @@ class Program
             // Create depth visualization
             Mat depthColorMat = RenderDepthFrame(_depthData, _depthWidth, _depthHeight);
 
+            // Add these camera intrinsic parameters at the class level
+            const double FX = 594.21;  // Focal length X (pixels)
+            const double FY = 591.04;  // Focal length Y (pixels)
+            const double CX = 339.5;   // Principal point X
+            const double CY = 242.7;   // Principal point Y
+
             foreach (var d in detections)
             {
-                var centerX = (d.BBox[0] + d.BBox[2]) / 2 - 17;
-                var centerY = (d.BBox[1] + d.BBox[3]) / 2 - 13;
+                var centerX = (d.BBox[0] + d.BBox[2]) / 2;                
+                var centerY = (d.BBox[1] + d.BBox[3]) / 2;                
 
                 // Map color coordinates to depth
-                int depthX = (int)(centerX * _depthWidth / colorFrame.Width);
-                int depthY = (int)(centerY * _depthHeight / colorFrame.Height);
+                int depthX = (int)(centerX * _depthWidth / colorFrame.Width) - 13;                
+                int depthY = (int)(centerY * _depthHeight / colorFrame.Height) - 10;
                 int depthIndex = depthY * _depthWidth + depthX;
 
                 if (depthIndex >= 0 && depthIndex < _depthData.Length)
@@ -113,6 +119,28 @@ class Program
                         5, Scalar.Red, 
                         -1
                     );
+
+                    if (depthInMm > 0)  // Valid depth
+                    {
+                        // Convert to meters for calculations
+                        double z = depthInMm / 1000.0;
+
+                        // Calculate real-world coordinates
+                        double x = (centerX - CX) * z / FX;
+                        double y = (centerY - CY) * z / FY;
+
+                        // Draw coordinate text
+                        string coordText = $"X: {x:F2}m  Y: {y:F2}m  Z: {z:F2}m";
+                        Cv2.PutText(
+                            cvMat,
+                            coordText,
+                            new OpenCvSharp.Point(centerX, centerY + 20),
+                            HersheyFonts.HersheySimplex,
+                            0.6,
+                            Scalar.White,
+                            1
+                        );
+                    }
 
                     Cv2.PutText(
                         depthColorMat,
@@ -132,7 +160,7 @@ class Program
             Cv2.WaitKey(1);
 
             // Dispose Mats
-            cvMat.Dispose();
+            //cvMat.Dispose();
             depthColorMat.Dispose();
         }
     }
