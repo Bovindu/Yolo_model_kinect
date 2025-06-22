@@ -132,9 +132,9 @@ class Program
                             depthPoint
                         );
 
-                        double x = realWorldPoint.X;
-                        double y = realWorldPoint.Y;
-                        double z = realWorldPoint.Z;
+                        double x = realWorldPoint.X * 1000;
+                        double y = realWorldPoint.Y * 1000;
+                        double z = realWorldPoint.Z * 1000;
 
                         // Show on screen
                         string coordText = $"X: {x:F2} Y: {y:F2} Z: {z:F2}";
